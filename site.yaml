@@ -5,17 +5,16 @@
 
   vars:
     php_version: "8.3"
-    project_dir: "/home/ubuntu/sayapatri-backend"
+    project_dir: "/var/www/sayapatri-backend"
     repo_url: "https://github.com/Ek-Ra-Sunya/sayapatri-backend.git"
     github_user: "{{ lookup('env','GITHUB_USER') }}"
     github_token: "{{ lookup('env','GITHUB_TOKEN') }}"
     nginx_conf: "/etc/nginx/sites-available/laravel"
-    db_name: "sayapatri"
-    db_user: "sayapatri_user"
-    db_password: "password123"
+    db_name: "homestead"
+    db_user: "homestead"
+    db_password: "secret"
 
   tasks:
-
     # -----------------
     # System Updates
     # -----------------
@@ -23,7 +22,8 @@
       apt:
         update_cache: yes
         cache_valid_time: 3600
-    - name: Upgrade security updates only 
+
+    - name: Upgrade security updates only
       apt:
         upgrade: safe
 
@@ -79,11 +79,24 @@
     # -----------------
     # Clone Laravel Repo
     # -----------------
+    - name: Ensure /var/www exists
+      file:
+        path: /var/www
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Mark project directory as safe for git
+      command: git config --global --add safe.directory /var/www/sayapatri-backend
+      become: yes
+      become_user: www-data
+
     - name: Clone Laravel project
       git:
         repo: "https://{{ github_user }}:{{ github_token }}@{{ repo_url | regex_replace('^https://', '') }}"
         dest: "{{ project_dir }}"
-        version: master
+        version: main
 
     - name: Create storage subdirectories
       file:
@@ -99,23 +112,50 @@
         - views
 
     # -----------------
+    # Ownership & Permissions
+    # -----------------
+    - name: Ensure correct ownership for Laravel project
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Set directory permissions to 775
+      command: find {{ project_dir }} -type d -exec chmod 775 {} \;
+
+    - name: Set file permissions to 664
+      command: find {{ project_dir }} -type f -exec chmod 664 {} \;
+
+    # -----------------
     # Laravel Setup
     # -----------------
     - name: Install PHP dependencies with Composer
-      command: composer install
+      command: composer install --no-dev --optimize-autoloader
       args:
         chdir: "{{ project_dir }}"
+      become_user: www-data
 
-    - name: Copy .env file
+    - name: Ensure .env file exists
       copy:
         src: "{{ project_dir }}/.env.example"
         dest: "{{ project_dir }}/.env"
         remote_src: yes
+        force: no
+
+    - name: Ensure .env is writable by www-data
+      file:
+        path: "{{ project_dir }}/.env"
+        owner: www-data
+        group: www-data
+        mode: '0664'
 
     - name: Generate Laravel APP_KEY
       command: php artisan key:generate
       args:
         chdir: "{{ project_dir }}"
+      become_user: www-data
 
     # -----------------
     # Database Setup
@@ -131,23 +171,50 @@
         state: started
         enabled: true
 
-    - name: Create MySQL database
-      mysql_db:
-        name: "{{ db_name }}"
+    - name: Install python3 and pip
+      apt:
+        name:
+          - python3
+          - python3-pip
         state: present
+        update_cache: yes
 
-    - name: Create MySQL user
-      mysql_user:
+    - name: Install PyMySQL (needed for Ansible MySQL modules)
+      apt:
+        name: python3-pymysql
+        state: present
+        update_cache: yes
+
+    - name: Ensure MySQL user exists
+      community.mysql.mysql_user:
         name: "{{ db_user }}"
         password: "{{ db_password }}"
-        priv: "{{ db_name }}.*:ALL"
         host: localhost
+        priv: "*.*:ALL"
         state: present
+        login_user: root
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Ensure database is created
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        login_host: localhost
+
 
     - name: Run Laravel migrations
       command: php artisan migrate --force
       args:
         chdir: "{{ project_dir }}"
+      become_user: www-data
+
+    - name: Run Laravel seeders
+      command: php artisan db:seed --force
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: www-data
 
     # -----------------
     # Nginx Setup
@@ -193,27 +260,15 @@
         force: true
 
     # -----------------
-    # Permissions Fix
+    # Final Permissions Fix
     # -----------------
-    - name: Set ownership to www-data
-      file:
-        path: "{{ project_dir }}"
-        state: directory
-        recurse: yes
-        owner: www-data
-        group: www-data
-
-    - name: Fix directory permissions
-      command: find {{ project_dir }} -type d -exec chmod 775 {} \;
-
-    - name: Fix file permissions
-      command: find {{ project_dir }} -type f -exec chmod 664 {} \;
-
     - name: Ensure storage and cache writable
       file:
         path: "{{ project_dir }}/{{ item }}"
         mode: '0775'
         recurse: yes
+        owner: www-data
+        group: www-data
       loop:
         - storage
         - bootstrap/cache
