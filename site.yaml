@@ -81,9 +81,9 @@
     # -----------------
     - name: Clone Laravel project
       git:
-      repo: "https://{{ github_user }}:{{ github_token }}@{{ repo_url | regex_replace('^https://', '') }}"
-      dest: "{{ project_dir }}"
-      version: master
+        repo: "https://{{ github_user }}:{{ github_token }}@{{ repo_url | regex_replace('^https://', '') }}"
+        dest: "{{ project_dir }}"
+        version: master
 
     - name: Create storage subdirectories
       file:
