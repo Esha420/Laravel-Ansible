@@ -13,6 +13,8 @@
     db_name: "homestead"
     db_user: "homestead"
     db_password: "secret"
+    nginx_server_name: "54.234.11.195"
+
 
   tasks:
     # -----------------
@@ -230,7 +232,7 @@
         content: |
           server {
               listen 80;
-              server_name _;
+              server_name {{ nginx_server_name }};
               root {{ project_dir }}/public;
 
               index index.php index.html index.htm;
