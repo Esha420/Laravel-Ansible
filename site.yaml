@@ -7,6 +7,8 @@
     php_version: "8.3"
     project_dir: "/home/ubuntu/sayapatri-backend"
     repo_url: "https://github.com/Ek-Ra-Sunya/sayapatri-backend.git"
+    github_user: "{{ lookup('env','GITHUB_USER') }}"
+    github_token: "{{ lookup('env','GITHUB_TOKEN') }}"
     nginx_conf: "/etc/nginx/sites-available/laravel"
     db_name: "sayapatri"
     db_user: "sayapatri_user"
@@ -79,9 +81,9 @@
     # -----------------
     - name: Clone Laravel project
       git:
-        repo: "{{ repo_url }}"
-        dest: "{{ project_dir }}"
-        version: master
+      repo: "https://{{ github_user }}:{{ github_token }}@{{ repo_url | regex_replace('^https://', '') }}"
+      dest: "{{ project_dir }}"
+      version: master
 
     - name: Create storage subdirectories
       file:
