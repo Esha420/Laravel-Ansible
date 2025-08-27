@@ -20,7 +20,10 @@
     - name: Update and upgrade apt packages
       apt:
         update_cache: yes
-        upgrade: dist
+        cache_valid_time: 3600
+    - name: Upgrade security updates only 
+      apt:
+        upgrade: safe
 
     - name: Install base packages
       apt:
