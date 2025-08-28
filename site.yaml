@@ -39,7 +39,11 @@
           - unzip
           - git
         state: present
-
+    - name: Ensure ACL is installed
+      apt:
+        name: acl
+        state: present
+        update_cache: yes
     # -----------------
     # PHP Setup
     # -----------------
