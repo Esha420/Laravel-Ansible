@@ -10,11 +10,8 @@
     github_user: "{{ lookup('env','GITHUB_USER') }}"
     github_token: "{{ lookup('env','GITHUB_TOKEN') }}"
     nginx_conf: "/etc/nginx/sites-available/laravel"
-    db_name: "homestead"
-    db_user: "homestead"
-    db_password: "secret"
-    nginx_server_name: "54.234.11.195"
-
+    nginx_server_name: "admin.sayapatri.store"
+    certbot_email: "your-email@example.com"
 
   tasks:
     # -----------------
@@ -23,11 +20,8 @@
     - name: Update and upgrade apt packages
       apt:
         update_cache: yes
-        cache_valid_time: 3600
-
-    - name: Upgrade security updates only
-      apt:
         upgrade: safe
+        cache_valid_time: 3600
 
     - name: Install base packages
       apt:
@@ -38,12 +32,9 @@
           - apt-transport-https
           - unzip
           - git
+          - acl
         state: present
-    - name: Ensure ACL is installed
-      apt:
-        name: acl
-        state: present
-        update_cache: yes
+
     # -----------------
     # PHP Setup
     # -----------------
@@ -72,15 +63,11 @@
     # -----------------
     # Composer Setup
     # -----------------
-    - name: Download composer installer
-      get_url:
-        url: https://getcomposer.org/installer
-        dest: /tmp/composer-setup.php
-
     - name: Install composer globally
-      command: php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer
-      args:
-        creates: /usr/local/bin/composer
+      get_url:
+        url: https://getcomposer.org/composer-stable.phar
+        dest: /usr/local/bin/composer
+        mode: '0755'
 
     # -----------------
     # Clone Laravel Repo
@@ -93,16 +80,12 @@
         group: www-data
         mode: '0755'
 
-    - name: Mark project directory as safe for git
-      command: git config --global --add safe.directory /var/www/sayapatri-backend
-      become: yes
-      become_user: www-data
-
     - name: Clone Laravel project
       git:
         repo: "https://{{ github_user }}:{{ github_token }}@{{ repo_url | regex_replace('^https://', '') }}"
         dest: "{{ project_dir }}"
         version: main
+        force: yes
 
     - name: Create storage subdirectories
       file:
@@ -123,122 +106,91 @@
     - name: Ensure correct ownership for Laravel project
       file:
         path: "{{ project_dir }}"
-        state: directory
         owner: www-data
         group: www-data
         recurse: yes
 
-    - name: Set directory permissions to 775
-      command: find {{ project_dir }} -type d -exec chmod 775 {} \;
-
-    - name: Set file permissions to 664
-      command: find {{ project_dir }} -type f -exec chmod 664 {} \;
+    - name: Set proper permissions on directories
+      file:
+        path: "{{ project_dir }}"
+        recurse: yes
+        mode: "u=rwX,g=rwX,o=rX"
 
     # -----------------
     # Laravel Setup
     # -----------------
     - name: Install PHP dependencies with Composer
-      command: composer install --no-dev --optimize-autoloader
-      args:
-        chdir: "{{ project_dir }}"
+      community.general.composer:
+        command: install
+        working_dir: "{{ project_dir }}"
+        no_dev: true
+        optimize_autoloader: true
+        prefer_dist: true
+        executable: composer
       become_user: www-data
 
-    - name: Ensure .env file exists
-      copy:
-        src: "{{ project_dir }}/.env.example"
+    - name: Upload Laravel .env file from template
+      template:
+        src: templates/.env.j2
         dest: "{{ project_dir }}/.env"
-        remote_src: yes
-        force: no
-
-    - name: Ensure .env is writable by www-data
-      file:
-        path: "{{ project_dir }}/.env"
         owner: www-data
         group: www-data
         mode: '0664'
 
-    - name: Generate Laravel APP_KEY
-      command: php artisan key:generate
-      args:
-        chdir: "{{ project_dir }}"
-      become_user: www-data
-
-    # -----------------
-    # Database Setup
-    # -----------------
-    - name: Install MySQL server
-      apt:
-        name: mysql-server
-        state: present
-
-    - name: Ensure MySQL is running and enabled
-      service:
-        name: mysql
-        state: started
-        enabled: true
-
-    - name: Install python3 and pip
-      apt:
-        name:
-          - python3
-          - python3-pip
-        state: present
-        update_cache: yes
-
-    - name: Install PyMySQL (needed for Ansible MySQL modules)
-      apt:
-        name: python3-pymysql
-        state: present
-        update_cache: yes
-
-    - name: Ensure MySQL user exists
-      community.mysql.mysql_user:
-        name: "{{ db_user }}"
-        password: "{{ db_password }}"
-        host: localhost
-        priv: "*.*:ALL"
-        state: present
-        login_user: root
-        login_unix_socket: /var/run/mysqld/mysqld.sock
-
-    - name: Ensure database is created
-      community.mysql.mysql_db:
-        name: "{{ db_name }}"
-        state: present
-        login_user: "{{ db_user }}"
-        login_password: "{{ db_password }}"
-        login_host: localhost
-
-
-    - name: Run Laravel migrations
+    - name: Run Laravel migrations (remote DB)
       command: php artisan migrate --force
       args:
         chdir: "{{ project_dir }}"
       become_user: www-data
 
-    - name: Run Laravel seeders
+    - name: Install MySQL client
+      apt:
+        name: default-mysql-client
+        state: present
+        update_cache: yes
+
+    - name: Check if admin user exists
+      command: >
+        mysql -h {{ db_host }}
+        -u {{ db_user }}
+        -p{{ db_pass }}
+        -D {{ db_name }}
+        -N -s -e "SELECT COUNT(*) FROM users WHERE email='{{ admin_email }}';"
+      register: admin_user_count
+      changed_when: false
+
+    - name: Run Laravel seeders (remote DB)
       command: php artisan db:seed --force
       args:
         chdir: "{{ project_dir }}"
       become_user: www-data
+      when: admin_user_count.stdout == "0"
 
     # -----------------
-    # Nginx Setup
+    # Nginx + Certbot Setup
     # -----------------
-    - name: Install nginx
+    - name: Install nginx and certbot
       apt:
-        name: nginx
+        name:
+          - nginx
+          - certbot
+          - python3-certbot-nginx
         state: present
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
 
     - name: Configure nginx for Laravel
       copy:
         dest: "{{ nginx_conf }}"
         content: |
           server {
-              listen 80;
               server_name {{ nginx_server_name }};
-              root {{ project_dir }}/public;
 
+              root {{ project_dir }}/public;
               index index.php index.html index.htm;
 
               location / {
@@ -264,6 +216,12 @@
         dest: /etc/nginx/sites-enabled/laravel
         state: link
         force: true
+
+    - name: Obtain SSL certificate via Certbot
+      command: certbot --nginx -d {{ nginx_server_name }} --non-interactive --agree-tos -m {{ certbot_email }}
+      args:
+        creates: /etc/letsencrypt/live/{{ nginx_server_name }}/fullchain.pem
+      notify: restart nginx
 
     # -----------------
     # Final Permissions Fix
